@@ -1,0 +1,17 @@
+[Unit]
+Description=Overseer - Nginx Log Watcher for Nydus
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/overseer
+ExecStart=/opt/overseer/venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+MemoryMax=500M
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
