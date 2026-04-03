@@ -79,10 +79,9 @@ class Watcher:
             return
 
         rows = [
-            r for r in (
-                parse_line(line, self._detector) for line in lines
-            )
-            if r is not None
+            row
+            for line in lines
+            for row in parse_line(line, self._detector)
         ]
 
         insert_rows(self._pool, rows)
