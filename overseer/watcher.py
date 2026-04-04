@@ -37,7 +37,8 @@ class LogFile:
         self.fh = None
         self.inode: int | None = None
         self.offset: int = 0
-        self._partial: str = ""
+        self._buffer: str = ""
+        self._depth: int = 0
         self._error_logged: bool = False
 
     def open(self, offset: int = 0, inode: int | None = None) -> bool:
@@ -56,7 +57,8 @@ class LogFile:
 
             self.fh = fh
             self.inode = current_inode
-            self._partial = ""
+            self._buffer = ""
+            self._depth = 0
             self._error_logged = False
             sys.stdout.write(
                 f"[overseer] opened {self.path} "
@@ -106,38 +108,45 @@ class LogFile:
         if not self.fh:
             return []
 
-        complete_lines = []
+        complete_objects = []
         try:
             while True:
                 line = self.fh.readline()
                 if not line:
                     break
 
-                if not line.endswith("\n"):
-                    if len(self._partial) + len(line) > MAX_PARTIAL_LINE_BYTES:
-                        sys.stderr.write(
-                            f"[overseer] partial line exceeded {MAX_PARTIAL_LINE_BYTES} "
-                            f"bytes on {self.path}, discarding.\n"
-                        )
-                        self._partial = ""
-                    else:
-                        self._partial += line
-                    break
+                for ch in line:
+                    if ch == "{":
+                        self._depth += 1
+                    elif ch == "}":
+                        self._depth -= 1
 
-                full_line = self._partial + line
-                self._partial = ""
-                complete_lines.append(full_line.strip())
+                self._buffer += line
+
+                if len(self._buffer) > MAX_PARTIAL_LINE_BYTES:
+                    sys.stderr.write(
+                        f"[overseer] buffer exceeded {MAX_PARTIAL_LINE_BYTES} "
+                        f"bytes on {self.path}, discarding.\n"
+                    )
+                    self._buffer = ""
+                    self._depth = 0
+                    continue
+
+                if self._depth == 0 and self._buffer.strip():
+                    complete_objects.append(self._buffer.strip())
+                    self._buffer = ""
+                    self._depth = 0
 
             self.offset = self.fh.tell()
         except OSError as exc:
             sys.stderr.write(f"[overseer] read error on {self.path}: {exc}\n")
 
-        return [l for l in complete_lines if l]
+        return complete_objects
 
-    def parse_rows(self, lines: list[str]) -> list[tuple]:
+    def parse_rows(self, objects: list[str]) -> list[tuple]:
         rows = []
-        for line in lines:
-            parsed = parse_line(line, self.detector)
+        for obj in objects:
+            parsed = parse_line(obj, self.detector)
             rows.extend(parsed)
         return rows
 
@@ -240,11 +249,11 @@ class Watcher:
                 self._save_state()
             return
 
-        lines = lf.read_lines()
-        if not lines:
+        objects = lf.read_lines()
+        if not objects:
             return
 
-        rows = lf.parse_rows(lines)
+        rows = lf.parse_rows(objects)
         if rows:
             self._pending.extend(rows)
 
