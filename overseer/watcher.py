@@ -14,9 +14,11 @@ from overseer.parser import parse_line
 _running = True
 STATE_FILE = Path("/states/watcher_state.json")
 
+
 def _signal_handler(sig, frame) -> None:
     global _running
     _running = False
+
 
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
@@ -31,18 +33,15 @@ class Watcher:
         self._state: dict[str, dict] = self._load_state()
 
     def _load_state(self) -> dict:
-        """Load saved offsets and inodes from JSON file."""
         if STATE_FILE.exists():
             try:
                 with open(STATE_FILE, "r") as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
-                # Corrupted or unreadable – start fresh
                 pass
         return {}
 
     def _save_state(self) -> None:
-        """Write current state to JSON file atomically (via temp + rename)."""
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = STATE_FILE.with_suffix(".tmp")
         with open(tmp, "w") as f:
@@ -50,12 +49,10 @@ class Watcher:
         os.replace(tmp, STATE_FILE)
 
     def _update_state(self, path: str, inode: int, offset: int) -> None:
-        """Update in‑memory state and persist to disk."""
         self._state[path] = {"inode": inode, "offset": offset}
         self._save_state()
 
     def _open_file(self, path: str) -> dict:
-        """Open file and seek to the last saved offset, or to end if new."""
         try:
             fh = open(path, "r")
             stat = os.stat(path)
@@ -68,17 +65,20 @@ class Watcher:
                 if offset <= current_size:
                     fh.seek(offset)
                 else:
-                    # File was truncated – start from beginning
                     fh.seek(0)
                     offset = 0
                     self._update_state(path, current_inode, offset)
             else:
-                # New file or inode changed – start from beginning
+                fh.seek(0)
                 offset = 0
                 self._update_state(path, current_inode, offset)
 
+            sys.stdout.write(f"[debug] opened {path} at offset {fh.tell()}\n")
+            sys.stdout.flush()
             return {"fh": fh, "inode": current_inode}
         except FileNotFoundError:
+            sys.stdout.write(f"[debug] file not found: {path}\n")
+            sys.stdout.flush()
             return {"fh": None, "inode": None}
 
     def _init_handles(self) -> None:
@@ -86,13 +86,11 @@ class Watcher:
             self._handles[path] = self._open_file(path)
 
     def _reopen_if_rotated(self, path: str, entry: dict) -> dict:
-        """Check for rotation and reopen if needed, resetting state offset."""
         try:
             current_inode = os.stat(path).st_ino
         except FileNotFoundError:
             if entry["fh"]:
                 entry["fh"].close()
-            # Remove from state – will be recreated when file appears
             self._state.pop(path, None)
             self._save_state()
             return {"fh": None, "inode": None}
@@ -102,7 +100,6 @@ class Watcher:
                 entry["fh"].close()
             try:
                 fh = open(path, "r")
-                # Rotation detected – start reading from the beginning
                 fh.seek(0)
                 self._update_state(path, current_inode, 0)
                 return {"fh": fh, "inode": current_inode}
@@ -113,21 +110,20 @@ class Watcher:
     def _process_path(self, path: str) -> None:
         entry = self._handles[path]
 
-        # If file is missing, try to reopen later
         if entry["fh"] is None:
             if os.path.exists(path):
                 self._handles[path] = self._open_file(path)
             return
 
-        # Handle log rotation while running
         self._handles[path] = self._reopen_if_rotated(path, entry)
         entry = self._handles[path]
 
         if entry["fh"] is None:
             return
 
-        # Read only new lines
         lines = entry["fh"].readlines()
+        sys.stdout.write(f"[debug] {path}: read {len(lines)} lines\n")
+        sys.stdout.flush()
         if not lines:
             return
 
@@ -137,10 +133,14 @@ class Watcher:
             for row in parse_line(line, self._detector)
         ]
 
+        sys.stdout.write(f"[debug] {path}: parsed {len(rows)} rows\n")
+        sys.stdout.flush()
+
         if rows:
+            sys.stdout.write(f"[debug] inserting {len(rows)} rows\n")
+            sys.stdout.flush()
             insert_rows(self._pool, rows)
 
-        # Update state with current file position
         current_offset = entry["fh"].tell()
         self._update_state(path, entry["inode"], current_offset)
 
@@ -148,7 +148,6 @@ class Watcher:
         for entry in self._handles.values():
             if entry.get("fh"):
                 entry["fh"].close()
-        # Final state save (redundant but safe)
         self._save_state()
 
     def run(self) -> None:
