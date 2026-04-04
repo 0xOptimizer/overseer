@@ -4,7 +4,13 @@ After=network.target mysql.service mariadb.service
 
 [Service]
 Type=simple
+User=overseer
+Group=overseer
+SupplementaryGroups=www-data          # To read nginx logs
 WorkingDirectory=/opt/overseer
+ExecStartPre=/bin/mkdir -p /states
+ExecStartPre=/bin/chown overseer:overseer /states
+ExecStartPre=/bin/chmod 755 /states
 ExecStart=/opt/overseer/venv/bin/python main.py
 Restart=on-failure
 RestartSec=5
@@ -12,6 +18,7 @@ StandardOutput=journal
 StandardError=journal
 MemoryMax=500M
 MemorySwapMax=0
+ReadWritePaths=/states                # Only allow writing to /states
 
 [Install]
 WantedBy=multi-user.target
